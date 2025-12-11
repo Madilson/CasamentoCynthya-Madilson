@@ -15,10 +15,13 @@ const AdminPanel: React.FC = () => {
   
   // Data States
   const [guests, setGuests] = useState<Guest[]>([]);
+  const [isLoadingGuests, setIsLoadingGuests] = useState(false); // New loading state
+
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   
   // Settings States
   const [newPassword, setNewPassword] = useState('');
@@ -66,7 +69,15 @@ const AdminPanel: React.FC = () => {
   };
 
   const loadData = async () => {
-    setGuests(StorageService.getGuests());
+    setIsLoadingGuests(true);
+    try {
+        const loadedGuests = await StorageService.getGuests();
+        setGuests(loadedGuests);
+    } catch (e) {
+        console.error("Erro ao carregar convidados:", e);
+    } finally {
+        setIsLoadingGuests(false);
+    }
     
     setIsLoadingPhotos(true);
     try {
@@ -87,10 +98,19 @@ const AdminPanel: React.FC = () => {
   };
 
   // --- Guest Actions ---
-  const handleDeleteGuest = (id: string) => {
-    if (window.confirm('Tem certeza que deseja remover este convidado?')) {
-      StorageService.deleteGuest(id);
-      setGuests(StorageService.getGuests()); // Reload synchronously for now
+  const handleDeleteGuest = async (id: string) => {
+    if (window.confirm('Tem certeza que deseja remover este convidado da lista online?')) {
+      setIsDeleting(true);
+      try {
+          await StorageService.deleteGuest(id);
+          // Recarrega a lista para confirmar a remoção
+          const updatedGuests = await StorageService.getGuests();
+          setGuests(updatedGuests);
+      } catch (err) {
+          alert('Erro ao excluir convidado. Verifique a conexão.');
+      } finally {
+          setIsDeleting(false);
+      }
     }
   };
 
@@ -98,12 +118,19 @@ const AdminPanel: React.FC = () => {
   const handleDeletePhoto = async (e: React.MouseEvent, id: string) => {
     e.preventDefault();
     e.stopPropagation(); // Prevent bubbling issues
-    if (window.confirm('Tem certeza que deseja excluir esta foto permanentemente?')) {
-      const updatedPhotos = await StorageService.deletePhoto(id);
-      setPhotos(updatedPhotos);
-      setSelectedPhotoIds(prev => prev.filter(pid => pid !== id)); // Remove from selection if it was there
-      if (selectedPhoto?.id === id) {
-          setSelectedPhoto(null);
+    if (window.confirm('Tem certeza que deseja excluir esta foto permanentemente do Drive?')) {
+      setIsDeleting(true);
+      try {
+          const updatedPhotos = await StorageService.deletePhoto(id);
+          setPhotos(updatedPhotos);
+          setSelectedPhotoIds(prev => prev.filter(pid => pid !== id)); 
+          if (selectedPhoto?.id === id) {
+              setSelectedPhoto(null);
+          }
+      } catch (err: any) {
+          alert(err.message || "Erro ao excluir foto.");
+      } finally {
+          setIsDeleting(false);
       }
     }
   };
@@ -127,10 +154,18 @@ const AdminPanel: React.FC = () => {
 
   const handleBulkDelete = async () => {
       if (selectedPhotoIds.length === 0) return;
+      if (!window.confirm(`Tem certeza que deseja excluir ${selectedPhotoIds.length} fotos do Drive? Essa ação não pode ser desfeita.`)) return;
       
-      const updatedPhotos = await StorageService.deletePhotos(selectedPhotoIds);
-      setPhotos(updatedPhotos);
-      setSelectedPhotoIds([]);
+      setIsDeleting(true);
+      try {
+          const updatedPhotos = await StorageService.deletePhotos(selectedPhotoIds);
+          setPhotos(updatedPhotos);
+          setSelectedPhotoIds([]);
+      } catch (err: any) {
+          alert(err.message || "Erro ao excluir fotos em massa.");
+      } finally {
+          setIsDeleting(false);
+      }
   };
 
   const handleDeleteComment = async (photoId: string, commentId: string) => {
@@ -303,11 +338,10 @@ const AdminPanel: React.FC = () => {
                 <div className="flex items-start">
                     <AlertTriangle className="w-5 h-5 text-amber-500 mr-2 flex-shrink-0 mt-0.5" />
                     <div className="text-sm text-amber-800">
-                        <p className="font-bold mb-1">Nota do Desenvolvedor</p>
+                        <p className="font-bold mb-1">Status da Conexão</p>
                         <p className="leading-relaxed">
-                            O app está conectado ao Google Drive. Fotos do álbum e a <strong>Foto da Capa</strong> serão salvas no seu Drive.
-                            <br/>
-                            Configurações locais (como a senha do admin) ficam salvas apenas neste navegador.
+                            O app está sincronizado com o Google Sheets/Drive. <br/>
+                            <strong>Convidados</strong> e <strong>Fotos</strong> são salvos na nuvem.
                         </p>
                     </div>
                 </div>
@@ -326,19 +360,24 @@ const AdminPanel: React.FC = () => {
                 <div className="grid grid-cols-3 gap-4 mb-6">
                     <div className="bg-blue-50 p-4 rounded border border-blue-100 text-center">
                     <p className="text-gray-500 text-xs uppercase tracking-wide">Total Confirmado</p>
-                    <p className="text-3xl font-bold text-blue-900">{guests.length}</p>
+                    <p className="text-3xl font-bold text-blue-900">{isLoadingGuests ? '...' : guests.length}</p>
                     </div>
                     <div className="bg-pink-50 p-4 rounded border border-pink-100 text-center">
                     <p className="text-gray-500 text-xs uppercase tracking-wide">Adultos</p>
-                    <p className="text-3xl font-bold text-pink-600">{totalAdults}</p>
+                    <p className="text-3xl font-bold text-pink-600">{isLoadingGuests ? '...' : totalAdults}</p>
                     </div>
                     <div className="bg-blue-50 p-4 rounded border border-blue-100 text-center">
                     <p className="text-gray-500 text-xs uppercase tracking-wide">Crianças</p>
-                    <p className="text-3xl font-bold text-blue-500">{totalKids}</p>
+                    <p className="text-3xl font-bold text-blue-500">{isLoadingGuests ? '...' : totalKids}</p>
                     </div>
                 </div>
 
-                <div className="overflow-x-auto border rounded-lg">
+                <div className="overflow-x-auto border rounded-lg relative min-h-[200px]">
+                    {isLoadingGuests && (
+                        <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center">
+                             <Loader2 className="w-8 h-8 animate-spin text-blue-900" />
+                        </div>
+                    )}
                     <table className="w-full text-left">
                     <thead className="bg-gray-100 border-b">
                         <tr>
@@ -352,7 +391,9 @@ const AdminPanel: React.FC = () => {
                     <tbody className="divide-y divide-gray-100">
                         {guests.length === 0 ? (
                         <tr>
-                            <td colSpan={5} className="p-8 text-center text-gray-500">Nenhuma confirmação ainda.</td>
+                            <td colSpan={5} className="p-8 text-center text-gray-500">
+                                {isLoadingGuests ? "Carregando lista..." : "Nenhuma confirmação encontrada na planilha."}
+                            </td>
                         </tr>
                         ) : (
                         guests.map(guest => (
@@ -366,7 +407,8 @@ const AdminPanel: React.FC = () => {
                             <td className="p-4">
                                 <button 
                                 onClick={() => handleDeleteGuest(guest.id)}
-                                className="text-red-400 hover:text-red-600 p-2 rounded-full hover:bg-red-50"
+                                disabled={isDeleting}
+                                className="text-red-400 hover:text-red-600 p-2 rounded-full hover:bg-red-50 disabled:opacity-50"
                                 title="Remover"
                                 >
                                 <Trash2 className="w-5 h-5" />
@@ -406,9 +448,10 @@ const AdminPanel: React.FC = () => {
                     {selectedPhotoIds.length > 0 && (
                         <button 
                             onClick={handleBulkDelete}
-                            className="flex items-center space-x-2 bg-red-100 text-red-700 px-3 py-1.5 rounded-md hover:bg-red-200 transition-colors text-sm font-bold"
+                            disabled={isDeleting}
+                            className="flex items-center space-x-2 bg-red-100 text-red-700 px-3 py-1.5 rounded-md hover:bg-red-200 transition-colors text-sm font-bold disabled:opacity-50"
                         >
-                            <Trash2 className="w-4 h-4" />
+                            {isDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
                             <span>Excluir ({selectedPhotoIds.length}) Selecionadas</span>
                         </button>
                     )}
@@ -428,9 +471,9 @@ const AdminPanel: React.FC = () => {
                                 onClick={() => togglePhotoSelection(photo.id)}
                             >
                                 {photo.type === 'video' ? (
-                                    <video src={photo.url} className={`w-full h-full object-cover transition-opacity ${isSelected ? 'opacity-80' : ''}`} />
+                                    <video src={photo.url} className={`w-full h-full object-cover transition-opacity ${isSelected ? 'opacity-80' : 'opacity-100'} ${isDeleting ? 'opacity-50' : ''}`} />
                                 ) : (
-                                    <img src={photo.url} alt="User upload" className={`w-full h-full object-cover transition-opacity ${isSelected ? 'opacity-80' : ''}`} />
+                                    <img src={photo.url} alt="User upload" className={`w-full h-full object-cover transition-opacity ${isSelected ? 'opacity-80' : 'opacity-100'} ${isDeleting ? 'opacity-50' : ''}`} />
                                 )}
                                 
                                 {/* Video Indicator */}
@@ -459,10 +502,15 @@ const AdminPanel: React.FC = () => {
                                         </button>
                                         <button 
                                             onClick={(e) => handleDeletePhoto(e, photo.id)}
-                                            className="bg-red-600 text-white p-2 rounded-full hover:bg-red-700 shadow-lg transform transition-transform hover:scale-110"
+                                            disabled={isDeleting}
+                                            className="bg-red-600 text-white p-2 rounded-full hover:bg-red-700 shadow-lg transform transition-transform hover:scale-110 disabled:opacity-50"
                                             title="Excluir Foto"
                                         >
-                                            <Trash2 className="w-5 h-5" />
+                                            {isDeleting && selectedPhotoIds.includes(photo.id) ? (
+                                                <Loader2 className="w-5 h-5 animate-spin" />
+                                            ) : (
+                                                <Trash2 className="w-5 h-5" />
+                                            )}
                                         </button>
                                     </div>
                                 </div>

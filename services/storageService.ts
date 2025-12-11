@@ -10,7 +10,6 @@ import { Guest, Photo, PixConfig } from '../types';
 // ==============================================================================
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyP19nB5J2oDe4R7vy26sTwIRIvwbLDX3CCprG96sy_TkjP-VF7Ld4bmHQjuCFk09UT/exec"; 
 
-const GUESTS_KEY = 'wedding_app_guests'; 
 const ADMIN_PASSWORD_KEY = 'wedding_app_admin_password';
 const PIX_CONFIG_KEY = 'wedding_app_pix_config';
 const COVER_PHOTO_KEY = 'wedding_app_cover_photo';
@@ -28,28 +27,95 @@ const fileToBase64 = (file: File): Promise<string> => {
 };
 
 export const StorageService = {
-  // --- Guest Methods ---
-  getGuests: (): Guest[] => {
-    const data = localStorage.getItem(GUESTS_KEY);
-    return data ? JSON.parse(data) : [];
+  // --- Guest Methods (Google Sheets Integration) ---
+  
+  // Agora retorna uma Promise pois busca online
+  getGuests: async (): Promise<Guest[]> => {
+    if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("/edit")) return [];
+
+    try {
+      // Adicionamos ?type=guests para que o script saiba que queremos a lista de convidados
+      // O Script deve estar preparado para ler 'e.parameter.type' no doGet
+      const response = await fetch(`${GOOGLE_SCRIPT_URL}?type=guests`);
+      if (!response.ok) throw new Error("Erro ao buscar convidados");
+      
+      const data = await response.json();
+      
+      if (!Array.isArray(data)) return [];
+
+      // Filtra apenas objetos que parecem ser convidados (tem nome e adultos)
+      // Isso protege caso o script retorne tudo (fotos e convidados) misturado
+      return data
+        .filter((item: any) => item.name && (item.adults !== undefined || item.type === 'rsvp'))
+        .map((item: any) => ({
+          id: item.id || crypto.randomUUID(),
+          name: item.name,
+          adults: Number(item.adults || 0),
+          children: Number(item.children || 0),
+          confirmedAt: item.confirmedAt || new Date().toISOString(),
+          message: item.message || ''
+        }));
+    } catch (error) {
+      console.error("Erro ao carregar convidados:", error);
+      return [];
+    }
   },
 
   addGuest: async (guest: Omit<Guest, 'id' | 'confirmedAt'>): Promise<Guest> => {
-    await delay(500); 
-    const guests = StorageService.getGuests();
     const newGuest: Guest = {
       ...guest,
       id: crypto.randomUUID(),
       confirmedAt: new Date().toISOString(),
     };
-    guests.push(newGuest);
-    localStorage.setItem(GUESTS_KEY, JSON.stringify(guests));
-    return newGuest;
+
+    // Payload específico para RSVP
+    // O Script deve verificar 'type' ou 'action'
+    const payload = {
+        type: 'rsvp', // Identificador para o script salvar na aba de convidados
+        action: 'addGuest',
+        id: newGuest.id,
+        name: newGuest.name,
+        adults: newGuest.adults,
+        children: newGuest.children,
+        message: newGuest.message,
+        confirmedAt: newGuest.confirmedAt
+    };
+
+    try {
+        const response = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+        
+        if (result.result === 'error') {
+            throw new Error(result.message || "Erro ao salvar na planilha.");
+        }
+
+        return newGuest;
+    } catch (error) {
+        console.error("Erro ao confirmar presença:", error);
+        throw new Error("Falha na conexão com a planilha. Tente novamente.");
+    }
   },
 
-  deleteGuest: (id: string): void => {
-    const guests = StorageService.getGuests().filter(g => g.id !== id);
-    localStorage.setItem(GUESTS_KEY, JSON.stringify(guests));
+  deleteGuest: async (id: string): Promise<void> => {
+     const payload = {
+        action: 'deleteGuest',
+        id: id,
+        adminPassword: StorageService.getAdminPassword()
+    };
+
+    try {
+        await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+    } catch (error) {
+        console.error("Erro ao deletar convidado:", error);
+        throw new Error("Erro ao remover da planilha.");
+    }
   },
 
   // --- Photo/Video Methods (GOOGLE DRIVE INTEGRATION) ---
@@ -65,7 +131,8 @@ export const StorageService = {
     }
 
     try {
-      const response = await fetch(GOOGLE_SCRIPT_URL);
+      // ?type=photos garante que não venha a lista de convidados misturada se o script tratar diferente
+      const response = await fetch(`${GOOGLE_SCRIPT_URL}?type=photos`);
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       
       const data = await response.json();
@@ -77,7 +144,10 @@ export const StorageService = {
           return [];
       }
 
-      return data.map((item: any) => ({
+      // Filtra para garantir que só temos fotos (caso venha misturado)
+      return data
+        .filter((item: any) => item.image || item.url || item.type === 'image' || item.type === 'video')
+        .map((item: any) => ({
         id: item.id,
         url: item.url,
         caption: item.caption,
@@ -115,7 +185,8 @@ export const StorageService = {
         image: base64,
         caption: caption,
         uploader: uploader,
-        type: type
+        type: type,
+        action: 'uploadPhoto' // Explicit action
     };
 
     try {
@@ -152,13 +223,58 @@ export const StorageService = {
   },
 
   deletePhoto: async (id: string): Promise<Photo[]> => {
-    alert("Para deletar fotos salvas no Drive, remova a linha correspondente na Planilha Google e o arquivo no Drive.");
-    return StorageService.getPhotos();
+    if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("/edit")) {
+         throw new Error("URL do Script inválida.");
+    }
+
+    // Payload instruindo o script a deletar
+    const payload = {
+        action: 'delete',
+        id: id,
+        adminPassword: StorageService.getAdminPassword() // Envia senha caso o script valide segurança
+    };
+
+    try {
+        const response = await fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+        
+        if (result.result === 'error') {
+            throw new Error(result.message || "O Script Google retornou erro ao tentar excluir.");
+        }
+
+        return StorageService.getPhotos();
+
+    } catch (error) {
+        console.error("Delete failed:", error);
+        throw new Error("Falha ao excluir do Drive. Verifique se o seu Google Script possui a função de deletar configurada.");
+    }
   },
 
   deletePhotos: async (ids: string[]): Promise<Photo[]> => {
-    alert("Delete as fotos diretamente na Planilha/Drive.");
-    return StorageService.getPhotos();
+    // Para garantir compatibilidade com scripts simples, deletamos um por um
+    const deletePromises = ids.map(id => {
+         const payload = {
+            action: 'delete',
+            id: id,
+            adminPassword: StorageService.getAdminPassword()
+        };
+        return fetch(GOOGLE_SCRIPT_URL, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+    });
+
+    try {
+        await Promise.all(deletePromises);
+        return StorageService.getPhotos();
+    } catch (error) {
+        console.error("Bulk delete failed", error);
+        throw new Error("Erro ao excluir algumas fotos. Tente novamente.");
+    }
   },
 
   addComment: async (photoId: string, author: string, text: string): Promise<Photo[]> => {
@@ -202,14 +318,12 @@ export const StorageService = {
     return localStorage.getItem(COVER_PHOTO_KEY) || '';
   },
 
-  // Modificado para salvar no Drive
   saveCoverPhoto: async (file: File): Promise<string> => {
      if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("/edit")) {
          throw new Error("URL do Script inválida.");
      }
 
      const base64 = await fileToBase64(file);
-     // Usamos um ID prefixado para identificar (embora o script salve tudo na mesma pasta)
      const id = "COVER_" + Date.now();
      
      const payload = {
@@ -217,7 +331,8 @@ export const StorageService = {
         image: base64,
         caption: "FOTO_DE_CAPA_OFICIAL",
         uploader: "Admin",
-        type: 'image'
+        type: 'image',
+        action: 'uploadPhoto'
      };
 
      try {
@@ -234,7 +349,6 @@ export const StorageService = {
              throw new Error(result.message || "Erro no script ao salvar capa");
         }
         
-        // Salva apenas a URL retornada pelo Drive no LocalStorage
         localStorage.setItem(COVER_PHOTO_KEY, result.url);
         return result.url;
 
